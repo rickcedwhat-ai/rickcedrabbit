@@ -1,0 +1,31 @@
+# .bot-review.yaml — drop this in the root of any repo using rickcedrabbit
+# All fields are optional. Delete what you don't need.
+
+# Direct the reviewer's attention
+focus:
+  - security and auth
+  - error handling and edge cases
+
+# File patterns to skip (glob-style)
+ignore:
+  - "*.md"
+  - "tests/**"
+
+# Files whose content gets included in every review prompt
+context_files:
+  - AGENTS.md
+  - src/types.ts
+
+# Checklist items the reviewer will verify for every PR
+checklist:
+  - No hardcoded secrets or credentials
+  - Public API changes are documented
+
+# Override the model for this repo (omit to use the worker default)
+# model_override: claude-opus-4-8
+
+# Planning mode config (for @rickcedwhat-ai plan on issues)
+planning:
+  enabled: true
+  focus:
+    - Break work into small, independently mergeable PRs
