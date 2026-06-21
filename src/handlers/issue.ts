@@ -12,6 +12,7 @@ export interface IssueHandlerContext {
   event: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload: any;
+  repo: string;
 }
 
 const BOT_LOGIN = 'rickcedwhat-ai';
@@ -69,7 +70,7 @@ async function findIssueHQComment(
 
 async function runPlan(ctx: IssueHandlerContext, issueNumber: number): Promise<void> {
   const { github, env } = ctx;
-  const repo = env.GITHUB_REPO;
+  const repo = ctx.repo;
 
   const spendGuard = new SpendGuard(env);
 
