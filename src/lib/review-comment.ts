@@ -97,7 +97,7 @@ export function parseIssueBody(body: string, n: number): string | null {
 
 export function parseLLMReply(body: string): Array<{ n: number; action: 'fix' | 'skip'; reason?: string }> {
   const items: Array<{ n: number; action: 'fix' | 'skip'; reason?: string }> = [];
-  const re = /\[(\d+)\]\s+(fix|skip)(?:\s*[-–:]\s*(.+))?/gi;
+  const re = /\[(\d+)\]\s+(fix|skip)(?:\s*[-–—:]\s*(.+))?/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(body)) !== null) {
     items.push({
