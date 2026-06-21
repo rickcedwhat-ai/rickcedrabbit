@@ -1,9 +1,13 @@
 import type { GitHubClient } from './github.js';
 
-const MAX_IMPORT_FILES = 8;
-const MAX_CALLER_FILES = 5;
+const MAX_IMPORT_FILES = 4;
+const MAX_CALLER_FILES = 2;
 const MAX_FILE_LINES = 300;
-const MAX_SYMBOLS = 4;
+const MAX_SYMBOLS = 10;
+// Subrequest budget for this function. Cloudflare Workers caps total subrequests at 50 (free tier)
+// or 1000 (paid). triggerReview uses ~6 before executeReview starts, and executeReview's fixed
+// calls use ~19 more, leaving ~25 for context gathering. Keep this at 20 for safety.
+const MAX_SUBREQUESTS = 20;
 
 function truncate(content: string): string {
   const lines = content.split('\n');
@@ -104,12 +108,17 @@ export async function gatherContextualFiles(
 
   const result: Record<string, string> = {};
   const seen = new Set(manualContextFiles);
+  let subrequests = 0;
 
   const changedPaths = parseDiffPaths(diff);
 
-  // 1. Fetch full content of changed files and parse their imports
+  // 1. Fetch content of changed files (up to budget)
+  const pathsToFetch = changedPaths.slice(0, MAX_SUBREQUESTS);
   const changedContents = await Promise.all(
-    changedPaths.map(async (p) => ({ path: p, content: await github.getFileContent(p, ref) })),
+    pathsToFetch.map(async (p) => {
+      subrequests++;
+      return { path: p, content: await github.getFileContent(p, ref) };
+    }),
   );
 
   const importCandidates: string[][] = [];
@@ -122,51 +131,50 @@ export async function gatherContextualFiles(
     importCandidates.push(...extractRelativeImports(content, path));
   }
 
-  // 2. Resolve and fetch imported files (first candidate that exists)
-  const importPaths = importCandidates.slice(0, MAX_IMPORT_FILES * 3);
-  const importResults = await Promise.all(
-    importPaths.map(async (candidates) => {
-      for (const candidate of candidates) {
-        if (seen.has(candidate)) return null;
-        const content = await github.getFileContent(candidate, ref).catch(() => null);
-        if (content) return { path: candidate, content };
-      }
-      return null;
-    }),
-  );
-
+  // 2. Resolve and fetch imported files — cap total import fetch attempts
+  const importPaths = importCandidates.slice(0, MAX_IMPORT_FILES * 2);
   let importCount = 0;
-  for (const r of importResults) {
-    if (!r || seen.has(r.path) || importCount >= MAX_IMPORT_FILES) continue;
-    seen.add(r.path);
-    result[r.path] = truncate(r.content);
-    importCount++;
+  for (const candidates of importPaths) {
+    if (importCount >= MAX_IMPORT_FILES) break;
+    if (subrequests >= MAX_SUBREQUESTS) break;
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      if (subrequests >= MAX_SUBREQUESTS) break;
+      subrequests++;
+      const content = await github.getFileContent(candidate, ref).catch(() => null);
+      if (content) {
+        seen.add(candidate);
+        result[candidate] = truncate(content);
+        importCount++;
+        break;
+      }
+    }
   }
 
-  // 3. Extract changed symbols and search for callers
-  const symbols = extractChangedSymbols(diff);
-  if (symbols.length > 0) {
-    const callerResults = await Promise.allSettled(
-      symbols.map(sym => github.searchCode(sym)),
-    );
-
+  // 3. Fetch caller files for changed symbols (skip code search — too many subrequests)
+  if (subrequests < MAX_SUBREQUESTS) {
+    const symbols = extractChangedSymbols(diff);
+    // Inline grep: search already-fetched files for symbol references instead of GitHub search API
     const callerPaths: string[] = [];
-    for (const r of callerResults) {
-      if (r.status === 'fulfilled') callerPaths.push(...r.value);
+    for (const sym of symbols) {
+      for (const [path, content] of Object.entries(result)) {
+        if (!changedPaths.includes(path) && content.includes(sym)) {
+          callerPaths.push(path);
+        }
+      }
     }
 
     const uniqueCallers = [...new Set(callerPaths)]
-      .filter(p => !seen.has(p) && !changedPaths.includes(p))
+      .filter(p => !seen.has(p))
       .slice(0, MAX_CALLER_FILES);
 
-    const callerContents = await Promise.all(
-      uniqueCallers.map(async (p) => ({ path: p, content: await github.getFileContent(p, ref).catch(() => null) })),
-    );
-
-    for (const { path, content } of callerContents) {
-      if (content && !seen.has(path)) {
-        seen.add(path);
-        result[path] = truncate(content);
+    for (const p of uniqueCallers) {
+      if (subrequests >= MAX_SUBREQUESTS) break;
+      subrequests++;
+      const content = await github.getFileContent(p, ref).catch(() => null);
+      if (content && !seen.has(p)) {
+        seen.add(p);
+        result[p] = truncate(content);
       }
     }
   }

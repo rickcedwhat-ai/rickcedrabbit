@@ -29,12 +29,18 @@ export function buildRoundComment(round: number, structured: StructuredReview): 
     : '';
 
   const tldr = structured.issues.length > 0
-    ? '```\n' +
-      'Review findings — reply with [N] fix or [N] skip - reason for each:\n\n' +
-      structured.issues
-        .map(i => `[${i.number}] ${i.title} — ${i.file}${i.line != null ? ':' + i.line : ''}`)
-        .join('\n') +
-      '\n```'
+    ? (() => {
+        const count = structured.issues.length;
+        const label = count === 1 ? '1 issue' : `${count} issues`;
+        const lines = structured.issues
+          .map(i => {
+            const loc = i.line != null ? `:${i.line}` : '';
+            return `[${i.number}] ${i.title} — ${i.file}${loc}\n${i.body}`;
+          })
+          .join('\n\n');
+        const inner = '```\nReview findings — reply with [N] fix or [N] skip + reason:\n\n' + lines + '\n```';
+        return `<details>\n<summary>📋 ${label} — expand to copy prompt</summary>\n\n${inner}\n\n</details>`;
+      })()
     : '';
 
   const details = structured.issues.map(buildIssueBlock).join('\n\n');
@@ -91,7 +97,7 @@ export function parseIssueBody(body: string, n: number): string | null {
 
 export function parseLLMReply(body: string): Array<{ n: number; action: 'fix' | 'skip'; reason?: string }> {
   const items: Array<{ n: number; action: 'fix' | 'skip'; reason?: string }> = [];
-  const re = /\[(\d+)\]\s+(fix|skip)(?:\s*[-–:]\s*(.+))?/gi;
+  const re = /\[(\d+)\]\s+(fix|skip)(?:\s*[-–—:]\s*(.+))?/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(body)) !== null) {
     items.push({

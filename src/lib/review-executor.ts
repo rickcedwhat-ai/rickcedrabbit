@@ -13,7 +13,7 @@ import { createProvider } from './ai-provider.js';
 import { fetchReviewConfig, getContextFiles } from './review-config.js';
 import { parseReviewHistory, addReviewRound } from './review-history.js';
 import { gatherContextualFiles } from './context-gatherer.js';
-import { buildRoundComment, countRoundComments } from './review-comment.js';
+import { buildRoundComment } from './review-comment.js';
 import type { ReviewRound } from './types.js';
 
 const MAX_DIFF_LINES = 600;
@@ -73,11 +73,19 @@ export async function executeReview(
   );
   const contextFiles = { ...autoContextFiles, ...manualContextFiles };
 
-  // 4. Get review history and determine round number
-  const hqFresh = hq ?? await findHQComment(github, prNumber);
+  // 4. Get review history and determine round number — fetch comments once for both
+  const prComments = await github.getIssueComments(prNumber);
+  const hqFresh = hq ?? (() => {
+    const c = prComments.find(c => c.user.login === 'rickcedwhat-ai' && c.body.includes('<!-- bot-hq -->'));
+    return c ? { id: c.id, body: c.body } : null;
+  })();
   const history = hqFresh ? parseReviewHistory(hqFresh.body) : [];
-  const existingRounds = await countRoundComments(github, prNumber);
-  const round = existingRounds + 1;
+  let maxRound = 0;
+  for (const c of prComments) {
+    const m = c.body.match(/<!-- review-round:(\d+) -->/);
+    if (m) maxRound = Math.max(maxRound, parseInt(m[1]));
+  }
+  const round = maxRound + 1;
 
   // 5. Call AI provider
   const provider = createProvider(env);
