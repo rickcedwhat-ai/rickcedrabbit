@@ -3,6 +3,7 @@ import type { GitHubClient } from './github.js';
 const MAX_IMPORT_FILES = 4;
 const MAX_CALLER_FILES = 2;
 const MAX_FILE_LINES = 300;
+const MAX_SYMBOLS = 10;
 // Subrequest budget for this function. Cloudflare Workers caps total subrequests at 50 (free tier)
 // or 1000 (paid). triggerReview uses ~6 before executeReview starts, and executeReview's fixed
 // calls use ~19 more, leaving ~25 for context gathering. Keep this at 20 for safety.
