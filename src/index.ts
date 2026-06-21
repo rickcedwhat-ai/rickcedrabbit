@@ -97,7 +97,7 @@ app.post('/webhook', async (c) => {
   const github = new GitHubClient(c.env.BOT_PAT, repo);
   const state = new StateManager(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
   const action: string = p.action ?? '';
-  const ctx = { github, state, env: c.env, event, payload };
+  const ctx = { github, state, env: c.env, event, payload, repo };
 
   try {
     if (event === 'pull_request' && (action === 'opened' || action === 'synchronize')) {

@@ -179,4 +179,40 @@ export class GitHubClient {
     );
     return { title: data.title, body: data.body };
   }
+
+  // Returns file paths in this repo that contain the given symbol.
+  async countCommitsSince(baseSha: string, headSha: string): Promise<number> {
+    try {
+      const data = await this.request<{ ahead_by: number }>(
+        `/repos/${this.repo}/compare/${baseSha}...${headSha}`,
+      );
+      return data.ahead_by;
+    } catch {
+      return 0;
+    }
+  }
+
+  async getPRDiffSince(baseSha: string, headSha: string): Promise<string> {
+    const url = `${BASE_URL}/repos/${this.repo}/compare/${baseSha}...${headSha}`;
+    const res = await fetch(url, {
+      headers: { ...this.headers, 'Accept': 'application/vnd.github.v3.diff' },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`GitHub API error ${res.status} for compare diff: ${text}`);
+    }
+    return res.text();
+  }
+
+  async searchCode(symbol: string): Promise<string[]> {
+    try {
+      const q = encodeURIComponent(`${symbol} repo:${this.repo}`);
+      const data = await this.request<{ items: Array<{ path: string }> }>(
+        `/search/code?q=${q}&per_page=5`,
+      );
+      return data.items.map(i => i.path);
+    } catch {
+      return [];
+    }
+  }
 }

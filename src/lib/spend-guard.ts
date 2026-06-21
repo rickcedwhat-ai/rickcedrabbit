@@ -2,9 +2,9 @@ import { Redis } from '@upstash/redis/cloudflare';
 import type { SpendLimits, SpendStatus } from './types.js';
 import type { Env } from '../index.js';
 
-// Anthropic Sonnet pricing ($/million tokens)
-const PRICE_INPUT_PER_MTOK = 3.0;
-const PRICE_OUTPUT_PER_MTOK = 15.0;
+// Anthropic Haiku 4.5 pricing ($/million tokens) — update if model changes
+const PRICE_INPUT_PER_MTOK = 1.0;
+const PRICE_OUTPUT_PER_MTOK = 5.0;
 
 export function calculateCost(inputTokens: number, outputTokens: number): number {
   return (inputTokens / 1_000_000) * PRICE_INPUT_PER_MTOK +
