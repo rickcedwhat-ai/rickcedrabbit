@@ -61,8 +61,9 @@ export async function setExclusiveAILabel(
   }
 }
 
-function spendLine(spend: SpendStatus): string {
-  return `📊 Repo today: $${spend.repo_daily.toFixed(2)} / $${spend.limits.repo_daily.toFixed(2)} · Global today: $${spend.global_daily.toFixed(2)} / $${spend.limits.global_daily.toFixed(2)} · Month: $${spend.global_monthly.toFixed(2)} / $${spend.limits.global_monthly.toFixed(2)}`;
+function spendLine(spend: SpendStatus, history: ReviewRound[]): string {
+  const prTotal = history.reduce((sum, r) => sum + r.cost, 0);
+  return `📊 This PR: $${prTotal.toFixed(4)} · Repo today: $${spend.repo_daily.toFixed(2)} / $${spend.limits.repo_daily.toFixed(2)} · Month: $${spend.global_monthly.toFixed(2)} / $${spend.limits.global_monthly.toFixed(2)}`;
 }
 
 function buildAIReviewSectionNotStarted(currentBody?: string): string {
@@ -102,7 +103,7 @@ export function buildAIReviewSectionComplete(spend: SpendStatus, history: Review
 
 > ✅ Review complete — no blocking issues.
 
-${spendLine(spend)}
+${spendLine(spend, history)}
 
 ${serializeReviewHistory(history)}
 <!-- ai-review-section-end -->`;
@@ -119,7 +120,7 @@ export function buildAIReviewSectionUnresolved(actionableCount: number, spend: S
 
 > ❌ Review complete — **${actionableCount} actionable issue(s)** require attention.
 
-${spendLine(spend)}
+${spendLine(spend, history)}
 
 ${serializeReviewHistory(history)}
 <!-- ai-review-section-end -->`;
@@ -141,6 +142,28 @@ export function buildAIReviewSectionSpendLimited(reason: string): string {
 export function replaceAIReviewSection(hqBody: string, newSection: string): string {
   return hqBody.replace(
     /<!-- ai-review-section-start -->[\s\S]*?<!-- ai-review-section-end -->/,
+    newSection,
+  );
+}
+
+function buildIssueLinkSection(prBody: string): string {
+  const matches = [...(prBody ?? '').matchAll(/(?:closes?|fixes?|resolves?)\s+#(\d+)/gi)];
+  if (matches.length === 0) {
+    return `<!-- bot-hq:issue-link -->
+### 🔗 Issue Link
+⚠️ No \`Closes #N\` found — add one to the PR description to auto-close on merge.
+<!-- /bot-hq:issue-link -->`;
+  }
+  const links = [...new Set(matches.map(m => `#${m[1]}`))].join(', ');
+  return `<!-- bot-hq:issue-link -->
+### 🔗 Issue Link
+🔗 Closes ${links}
+<!-- /bot-hq:issue-link -->`;
+}
+
+function replaceIssueLinkSection(hqBody: string, newSection: string): string {
+  return hqBody.replace(
+    /<!-- bot-hq:issue-link -->[\s\S]*?<!-- \/bot-hq:issue-link -->/,
     newSection,
   );
 }
@@ -202,7 +225,8 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
       return;
     }
 
-    await github.createComment(prNumber, HQ_COMMENT_TEMPLATE);
+    const hqBody = replaceIssueLinkSection(HQ_COMMENT_TEMPLATE, buildIssueLinkSection(pr.body ?? ''));
+    await github.createComment(prNumber, hqBody);
     await github.addLabels(prNumber, ['ai-review: not started']);
     await github.setCommitStatus(sha, 'pending', AI_CONTEXT, 'AI review not yet requested');
     return;

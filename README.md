@@ -101,3 +101,4 @@ npm test          # vitest unit tests
 npm run typecheck # tsc --noEmit
 npm run dev       # wrangler dev (local)
 ```
+# smoke test
