@@ -12,14 +12,16 @@ import { SpendGuard, calculateCost } from './spend-guard.js';
 import { createProvider } from './ai-provider.js';
 import { fetchReviewConfig, getContextFiles } from './review-config.js';
 import { parseReviewHistory, addReviewRound } from './review-history.js';
+import { gatherContextualFiles } from './context-gatherer.js';
+import { buildRoundComment, countRoundComments } from './review-comment.js';
 import type { ReviewRound } from './types.js';
 
-function countActionableIssues(reviewBody: string): number {
-  if (/\*\*no blocking issues\*\*/i.test(reviewBody)) return 0;
-  if (!/\*\*actionable issues found\*\*/i.test(reviewBody)) return 0;
-  // Count markdown list items that look like issue reports
-  const bullets = reviewBody.match(/^[-*]\s+.+/gm) ?? [];
-  return Math.max(1, bullets.length);
+const MAX_DIFF_LINES = 600;
+
+function truncateDiff(diff: string): string {
+  const lines = diff.split('\n');
+  if (lines.length <= MAX_DIFF_LINES) return diff;
+  return lines.slice(0, MAX_DIFF_LINES).join('\n') + `\n\n… diff truncated at ${MAX_DIFF_LINES} lines (${lines.length - MAX_DIFF_LINES} lines omitted)`;
 }
 
 export async function executeReview(
@@ -27,9 +29,10 @@ export async function executeReview(
   prNumber: number,
   sha: string,
   hq: { id: number; body: string } | null,
+  baseSha?: string,
 ): Promise<void> {
   const { github, env } = ctx;
-  const repo = env.GITHUB_REPO;
+  const repo = ctx.repo;
 
   const spendGuard = new SpendGuard(env);
 
@@ -53,72 +56,83 @@ export async function executeReview(
 
   const [config, diff] = await Promise.all([
     fetchReviewConfig(github, headRef),
-    github.getPRDiff(prNumber),
+    baseSha
+      ? github.getPRDiffSince(baseSha, sha)
+      : github.getPRDiff(prNumber),
   ]);
 
-  // 3. Fetch context files
-  const contextFiles = await getContextFiles(github, config, headRef);
+  const truncatedDiff = truncateDiff(diff);
 
-  // 4. Get review history from HQ comment
+  // 3. Fetch context files
+  const manualContextFiles = await getContextFiles(github, config, headRef);
+  const autoContextFiles = await gatherContextualFiles(
+    github,
+    truncatedDiff,
+    headRef,
+    new Set(Object.keys(manualContextFiles)),
+  );
+  const contextFiles = { ...autoContextFiles, ...manualContextFiles };
+
+  // 4. Get review history and determine round number
   const hqFresh = hq ?? await findHQComment(github, prNumber);
   const history = hqFresh ? parseReviewHistory(hqFresh.body) : [];
+  const existingRounds = await countRoundComments(github, prNumber);
+  const round = existingRounds + 1;
 
   // 5. Call AI provider
   const provider = createProvider(env);
   const result = await provider.generateReview({
     prNumber,
     prTitle: prData.title,
-    prBody: (prData as any).body ?? '',
-    diff,
+    prBody: (prData as { body?: string }).body ?? '',
+    diff: truncatedDiff,
     contextFiles,
     config,
     history,
     headSha: sha,
   });
 
-  // 6. Post review as a GitHub PR review (COMMENT = non-blocking)
-  await github.createPRReview(prNumber, result.review_body, 'COMMENT');
+  // 6. Post round comment
+  const roundBody = buildRoundComment(round, result.structured);
+  await github.createComment(prNumber, roundBody);
 
   // 7. Record spend
   const cost = calculateCost(result.input_tokens, result.output_tokens);
   await spendGuard.recordSpend(repo, cost);
 
-  // 8. Build new history round
+  // 8. Build history round
+  const firstIssueLine = result.structured.issues[0]
+    ? `${result.structured.issues[0].title} (${result.structured.issues.length} issue${result.structured.issues.length === 1 ? '' : 's'})`
+    : 'No issues found';
+
   const newRound: ReviewRound = {
-    round: history.length + 1,
+    round,
     timestamp: new Date().toISOString(),
     commit_sha: sha,
     input_tokens: result.input_tokens,
     output_tokens: result.output_tokens,
     cost,
-    summary: result.review_body.split('\n').find(l => l.trim())?.slice(0, 100) ?? 'Review complete',
+    summary: firstIssueLine,
   };
   const updatedHistory = addReviewRound(history, newRound);
 
-  // 9. Get spend status for HQ display
-  const spendStatus = await spendGuard.getSpendStatus(repo);
+  // 9. Update HQ and labels — fetch fresh HQ and run label/status in parallel
+  const hasIssues = result.structured.issues.length > 0;
+  const label = hasIssues ? 'ai-review: unresolved' : 'ai-review: complete';
+  const statusState = hasIssues ? 'failure' : 'success';
+  const statusDesc = hasIssues ? `AI review: ${result.structured.issues.length} issue(s)` : 'AI review passed';
 
-  // 10. Determine commit status from review content
-  const actionableCount = countActionableIssues(result.review_body);
-  const hasBlocking = actionableCount > 0;
+  const [spendStatus, hqForUpdate] = await Promise.all([
+    spendGuard.getSpendStatus(repo),
+    findHQComment(github, prNumber),
+    setExclusiveAILabel(github, prNumber, label),
+    github.setCommitStatus(sha, statusState, AI_CONTEXT, statusDesc).catch(() => {}),
+  ]);
 
-  if (hasBlocking) {
-    await setExclusiveAILabel(github, prNumber, 'ai-review: unresolved');
-    await github.setCommitStatus(sha, 'failure', AI_CONTEXT, `AI review: ${actionableCount} actionable issue(s)`);
-
-    const hqToUpdate = hqFresh ?? await findHQComment(github, prNumber);
-    if (hqToUpdate) {
-      const section = buildAIReviewSectionUnresolved(actionableCount, spendStatus, updatedHistory);
-      await github.updateComment(hqToUpdate.id, replaceAIReviewSection(hqToUpdate.body, section));
-    }
-  } else {
-    await setExclusiveAILabel(github, prNumber, 'ai-review: complete');
-    await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'AI review passed');
-
-    const hqToUpdate = hqFresh ?? await findHQComment(github, prNumber);
-    if (hqToUpdate) {
-      const section = buildAIReviewSectionComplete(spendStatus, updatedHistory);
-      await github.updateComment(hqToUpdate.id, replaceAIReviewSection(hqToUpdate.body, section));
-    }
+  if (hqForUpdate) {
+    const section = hasIssues
+      ? buildAIReviewSectionUnresolved(result.structured.issues.length, spendStatus, updatedHistory)
+      : buildAIReviewSectionComplete(spendStatus, updatedHistory);
+    await github.updateComment(hqForUpdate.id, replaceAIReviewSection(hqForUpdate.body, section));
   }
 }

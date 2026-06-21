@@ -77,3 +77,30 @@ export interface AIProviderResponse {
   output_tokens: number;
   model: string;
 }
+
+export interface ReviewIssue {
+  number: number;
+  title: string;
+  file: string;
+  line: number | null;
+  body: string;
+}
+
+export interface StructuredReview {
+  summary: string;
+  issues: ReviewIssue[];
+}
+
+export type IssueState = 'open' | 'fixed' | 'skipped' | 'challenged' | 'overridden';
+
+export interface IssueStateRecord {
+  n: number;
+  state: IssueState;
+}
+
+export interface ReviewResponse {
+  structured: StructuredReview;
+  input_tokens: number;
+  output_tokens: number;
+  model: string;
+}

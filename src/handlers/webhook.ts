@@ -2,7 +2,8 @@ import type { GitHubClient } from '../lib/github.js';
 import type { StateManager } from '../lib/state.js';
 import type { Env } from '../index.js';
 import type { SpendStatus, ReviewRound } from '../lib/types.js';
-import { serializeReviewHistory } from '../lib/review-history.js';
+import { serializeReviewHistory, parseReviewHistory } from '../lib/review-history.js';
+
 export interface HandlerContext {
   github: GitHubClient;
   state: StateManager;
@@ -10,6 +11,7 @@ export interface HandlerContext {
   event: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload: any;
+  repo: string;
 }
 
 const BOT_LOGIN = 'rickcedwhat-ai';
@@ -37,9 +39,7 @@ export const HQ_COMMENT_TEMPLATE = `<!-- bot-hq -->
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-- [ ] 🔴 Priority review
-- [ ] 🟡 Normal review
-- [ ] ⬜ Backburner review
+- [ ] 🔍 Request AI review
 
 > _Not yet requested_
 <!-- ai-review-section-end -->
@@ -66,13 +66,14 @@ function spendLine(spend: SpendStatus, history: ReviewRound[]): string {
   return `📊 This PR: $${prTotal.toFixed(4)} · Repo today: $${spend.repo_daily.toFixed(2)} / $${spend.limits.repo_daily.toFixed(2)} · Month: $${spend.global_monthly.toFixed(2)} / $${spend.limits.global_monthly.toFixed(2)}`;
 }
 
-function buildAIReviewSectionNotStarted(currentBody?: string): string {
-  const checkboxes = extractCheckboxes(currentBody ?? '').replace(/\[x\]/gi, '[ ]');
+const SINGLE_CHECKBOX = '- [ ] 🔍 Request AI review';
+
+function buildAIReviewSectionNotStarted(): string {
   return `<!-- ai-review-section-start -->
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-${checkboxes}
+${SINGLE_CHECKBOX}
 
 > _Not yet requested_
 <!-- ai-review-section-end -->`;
@@ -84,9 +85,7 @@ function buildAIReviewSectionWaiting(prNumber: number): string {
 <!-- ai-review-trigger-time: ${now} -->
 
 ### 🔍 AI Review
-- [ ] 🔴 Priority review
-- [ ] 🟡 Normal review
-- [ ] ⬜ Backburner review
+${SINGLE_CHECKBOX}
 
 > ⏳ Review requested for #${prNumber} — AI review in progress…
 <!-- ai-review-section-end -->`;
@@ -97,9 +96,7 @@ export function buildAIReviewSectionComplete(spend: SpendStatus, history: Review
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-- [ ] 🔴 Priority review
-- [ ] 🟡 Normal review
-- [ ] ⬜ Backburner review
+${SINGLE_CHECKBOX}
 
 > ✅ Review complete — no blocking issues.
 
@@ -114,11 +111,9 @@ export function buildAIReviewSectionUnresolved(actionableCount: number, spend: S
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-- [ ] 🔴 Priority review
-- [ ] 🟡 Normal review
-- [ ] ⬜ Backburner review
+${SINGLE_CHECKBOX}
 
-> ❌ Review complete — **${actionableCount} actionable issue(s)** require attention.
+> ❌ Review complete — **${actionableCount} issue(s)** require attention.
 
 ${spendLine(spend, history)}
 
@@ -131,12 +126,21 @@ export function buildAIReviewSectionSpendLimited(reason: string): string {
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-- [ ] 🔴 Priority review
-- [ ] 🟡 Normal review
-- [ ] ⬜ Backburner review
+${SINGLE_CHECKBOX}
 
 > ⛔ Spend limit reached — ${reason}
 <!-- ai-review-section-end -->`;
+}
+
+// Adds or replaces the partial trigger checkbox in the HQ body without
+// rebuilding the whole section (preserves spend/history lines).
+function addPartialTriggerToHQ(body: string, commitCount: number, baseSha: string): string {
+  const line = `- [ ] 🔄 Partial review (${commitCount} new commit${commitCount === 1 ? '' : 's'})`;
+  const marker = `<!-- partial-base-sha: ${baseSha} -->`;
+  return body.replace(
+    /(- \[ \] 🔍 Request AI review\n)(?:- \[ \] 🔄[^\n]*\n)?(?:<!-- partial-base-sha: [a-f0-9]+ -->\n)?/,
+    `$1${line}\n${marker}\n`,
+  );
 }
 
 export function replaceAIReviewSection(hqBody: string, newSection: string): string {
@@ -168,16 +172,14 @@ function replaceIssueLinkSection(hqBody: string, newSection: string): string {
   );
 }
 
-function extractCheckboxes(body: string): string {
-  const match = body.match(/- \[[ x]\] [^\n]+\n- \[[ x]\] [^\n]+\n- \[[ x]\] [^\n]+/);
-  if (match) return match[0];
-  return `- [ ] 🔴 Priority review\n- [ ] 🟡 Normal review\n- [ ] ⬜ Backburner review`;
-}
+type ReviewTrigger = { type: 'full' } | { type: 'partial'; baseSha: string } | null;
 
-function getCheckedPriority(body: string): 'priority' | 'normal' | 'backburner' | null {
-  if (/- \[x\] 🔴/i.test(body)) return 'priority';
-  if (/- \[x\] 🟡/i.test(body)) return 'normal';
-  if (/- \[x\] ⬜/i.test(body)) return 'backburner';
+function getReviewTrigger(body: string): ReviewTrigger {
+  if (/- \[x\] 🔍/i.test(body)) return { type: 'full' };
+  if (/- \[x\] 🔄/i.test(body)) {
+    const m = body.match(/<!-- partial-base-sha: ([a-f0-9]+) -->/);
+    if (m) return { type: 'partial', baseSha: m[1] };
+  }
   return null;
 }
 
@@ -194,6 +196,7 @@ async function triggerReview(
   ctx: HandlerContext,
   prNumber: number,
   sha: string,
+  baseSha?: string,
 ): Promise<void> {
   const { github } = ctx;
 
@@ -207,7 +210,7 @@ async function triggerReview(
   }
 
   const { executeReview } = await import('../lib/review-executor.js');
-  await executeReview(ctx, prNumber, sha, hq);
+  await executeReview(ctx, prNumber, sha, hq, baseSha);
 }
 
 export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
@@ -217,10 +220,9 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
   const prNumber: number = pr.number;
   const sha: string = pr.head.sha;
   const userLogin: string = pr.user.login;
-  const isDependabot = userLogin === DEPENDABOT_LOGIN;
 
   if (action === 'opened') {
-    if (isDependabot) {
+    if (userLogin === DEPENDABOT_LOGIN) {
       await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'Dependabot PR — AI review not required');
       return;
     }
@@ -234,22 +236,22 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
 
   if (action === 'synchronize') {
     const labels = await github.getLabels(prNumber);
-    const shouldReset = labels.some(l =>
-      l === 'ai-review: complete' ||
-      l === 'ai-review: unresolved' ||
-      l === 'ai-review: waiting',
-    );
 
-    if (shouldReset) {
-      await setExclusiveAILabel(github, prNumber, 'ai-review: not started', labels);
-      await github.setCommitStatus(sha, 'pending', AI_CONTEXT, 'AI review not yet requested');
-
+    if (labels.includes('ai-review: complete')) {
+      // Show partial trigger with new commit count — do not reset label
       const hq = await findHQComment(github, prNumber);
       if (hq) {
-        const updatedBody = replaceAIReviewSection(hq.body, buildAIReviewSectionNotStarted(hq.body));
-        await github.updateComment(hq.id, updatedBody);
+        const history = parseReviewHistory(hq.body);
+        const lastRound = history[history.length - 1];
+        if (lastRound) {
+          const commitCount = await github.countCommitsSince(lastRound.commit_sha, sha);
+          if (commitCount > 0) {
+            await github.updateComment(hq.id, addPartialTriggerToHQ(hq.body, commitCount, lastRound.commit_sha));
+          }
+        }
       }
     }
+    // If unresolved, waiting, or not started: no action on push
   }
 }
 
@@ -260,7 +262,6 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
   const issue = payload.issue;
   const sender = payload.sender;
 
-  // Only handle PR comments
   if (!issue.pull_request) return;
 
   const prNumber: number = issue.number;
@@ -268,14 +269,36 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
   const commentAuthor: string = comment.user.login;
   const senderLogin: string = sender.login;
 
-  // @rickcedwhat-ai review command
+  // @rickcedwhat-ai review command (non-bot only)
   if (commentAuthor !== BOT_LOGIN && action === 'created' && /^@rickcedwhat-ai\s+(?:ai\s+)?review/i.test(commentBody)) {
     const pr = await github.getPR(prNumber);
     await triggerReview(ctx, prNumber, pr.head.sha);
     return;
   }
 
-  // @rickcedwhat-ai reminder <delay> command
+  // @rickcedwhat-ai override N,N,N or override all
+  if (action === 'created') {
+    const overrideMatch = commentBody.match(/^@rickcedwhat-ai\s+override\s+(.+)/i);
+    if (overrideMatch) {
+      const pr = await github.getPR(prNumber);
+      const { handleOverride } = await import('../lib/review-verifier.js');
+      await handleOverride(ctx, prNumber, overrideMatch[1].trim(), pr.head.sha);
+      return;
+    }
+  }
+
+  // LLM [N] fix/skip reply — allowed from any author (including bot acting as LLM)
+  if (action === 'created' && /\[\d+\]\s+(fix|skip)/i.test(commentBody)) {
+    const labels = await github.getLabels(prNumber);
+    if (labels.includes('ai-review: unresolved')) {
+      const pr = await github.getPR(prNumber);
+      const { handleLLMReply } = await import('../lib/review-verifier.js');
+      await handleLLMReply(ctx, prNumber, commentBody, pr.head.sha);
+      return;
+    }
+  }
+
+  // @rickcedwhat-ai reminder <delay> command (non-bot only)
   if (commentAuthor !== BOT_LOGIN && action === 'created') {
     const reminderMatch = commentBody.match(/^@rickcedwhat-ai\s+reminder\s+(\d+)([mhd])/i);
     if (reminderMatch) {
@@ -283,10 +306,9 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
       const unit = reminderMatch[2].toLowerCase();
       const multiplier: Record<string, number> = { m: 60, h: 3600, d: 86400 };
       const delaySecs = amount * (multiplier[unit] ?? 60);
-
-      const workerUrl = `https://cr-bot.${env.GITHUB_REPO.split('/')[0]}.workers.dev`;
-      const reminderUrl = `https://qstash.upstash.io/v2/publish/${workerUrl}/reminder`;
+      const unitLabel = unit === 'm' ? `${amount}m` : unit === 'h' ? `${amount}h` : `${amount}d`;
       try {
+        const reminderUrl = `https://qstash.upstash.io/v2/publish/https://rickcedrabbit.ccata002.workers.dev/reminder`;
         const res = await fetch(reminderUrl, {
           method: 'POST',
           headers: {
@@ -294,14 +316,9 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
             'Content-Type': 'application/json',
             'Upstash-Delay': `${delaySecs}s`,
           },
-          body: JSON.stringify({ pr_number: prNumber, repo: env.GITHUB_REPO }),
+          body: JSON.stringify({ pr_number: prNumber }),
         });
-        if (!res.ok) {
-          console.error(`Failed to schedule reminder: QStash returned ${res.status}`);
-          return;
-        }
-        const unitLabel = unit === 'm' ? `${amount}m` : unit === 'h' ? `${amount}h` : `${amount}d`;
-        await github.createComment(prNumber, `⏱ Reminder scheduled for ${unitLabel}.`);
+        if (res.ok) await github.createComment(prNumber, `⏱ Reminder scheduled for ${unitLabel}.`);
       } catch (err) {
         console.error('Failed to schedule reminder:', err);
       }
@@ -309,21 +326,22 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
     }
   }
 
-  // HQ comment checkbox edit detection
-  if (commentAuthor === BOT_LOGIN && senderLogin !== BOT_LOGIN && comment.body.includes('<!-- bot-hq -->')) {
-    const priority = getCheckedPriority(commentBody);
-    if (priority) {
+  // HQ comment checkbox edit detection (bot's comment, non-bot sender)
+  if (action === 'edited' && commentAuthor === BOT_LOGIN && senderLogin !== BOT_LOGIN && commentBody.includes('<!-- bot-hq -->')) {
+    const trigger = getReviewTrigger(commentBody);
+    if (trigger) {
       const pr = await github.getPR(prNumber);
-      await triggerReview(ctx, prNumber, pr.head.sha);
+      await triggerReview(
+        ctx,
+        prNumber,
+        pr.head.sha,
+        trigger.type === 'partial' ? trigger.baseSha : undefined,
+      );
     }
   }
 }
 
 export async function handlePullRequestReview(ctx: HandlerContext): Promise<void> {
-  // Prevent feedback loops: ignore reviews posted by our own bot
   const review = ctx.payload.review;
   if (review?.user?.login === BOT_LOGIN) return;
-  // All other reviews are informational — the AI review commit status is set
-  // by the review executor, not by watching for review events from others.
 }
-
