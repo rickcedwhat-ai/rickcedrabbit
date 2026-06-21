@@ -137,7 +137,7 @@ export async function gatherContextualFiles(
     if (importCount >= MAX_IMPORT_FILES) break;
     if (subrequests >= MAX_SUBREQUESTS) break;
     for (const candidate of candidates) {
-      if (seen.has(candidate)) break;
+      if (seen.has(candidate)) continue;
       if (subrequests >= MAX_SUBREQUESTS) break;
       subrequests++;
       const content = await github.getFileContent(candidate, ref).catch(() => null);
