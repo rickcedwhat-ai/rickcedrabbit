@@ -49,14 +49,15 @@ export async function handleCoordinator(ctx: CoordinatorContext): Promise<void> 
 export async function updateQueueIssueDashboard(
   github: GitHubClient,
   env: Env,
+  repo: string,
   _state?: unknown,
 ): Promise<void> {
-  const dashboardIssueNumber = parseInt(env.QUEUE_ISSUE_NUMBER, 10);
+  const dashboardIssueNumber = parseInt(env.DASHBOARD_ISSUE ?? '', 10);
   if (isNaN(dashboardIssueNumber)) return;
 
   try {
     const spendGuard = new SpendGuard(env);
-    const spend = await spendGuard.getSpendStatus(env.GITHUB_REPO);
+    const spend = await spendGuard.getSpendStatus(repo);
 
     // Gather active PRs with ai-review labels
     const openPRs = await github.listOpenPRs();

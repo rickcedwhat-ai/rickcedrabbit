@@ -220,10 +220,16 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
   const prNumber: number = pr.number;
   const sha: string = pr.head.sha;
   const userLogin: string = pr.user.login;
+  const isDraft: boolean = pr.draft === true;
 
   if (action === 'opened') {
     if (userLogin === DEPENDABOT_LOGIN) {
       await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'Dependabot PR — AI review not required');
+      return;
+    }
+
+    if (isDraft) {
+      await github.setCommitStatus(sha, 'pending', AI_CONTEXT, 'Draft PR — review will run when ready');
       return;
     }
 
@@ -234,11 +240,20 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
     return;
   }
 
+  if (action === 'ready_for_review') {
+    const hqBody = replaceIssueLinkSection(HQ_COMMENT_TEMPLATE, buildIssueLinkSection(pr.body ?? ''));
+    await github.createComment(prNumber, hqBody);
+    await github.addLabels(prNumber, ['ai-review: not started']);
+    await github.setCommitStatus(sha, 'pending', AI_CONTEXT, 'AI review not yet requested');
+    return;
+  }
+
   if (action === 'synchronize') {
+    if (isDraft) return;
+
     const labels = await github.getLabels(prNumber);
 
     if (labels.includes('ai-review: complete')) {
-      // Show partial trigger with new commit count — do not reset label
       const hq = await findHQComment(github, prNumber);
       if (hq) {
         const history = parseReviewHistory(hq.body);

@@ -100,7 +100,7 @@ app.post('/webhook', async (c) => {
   const ctx = { github, state, env: c.env, event, payload, repo };
 
   try {
-    if (event === 'pull_request' && (action === 'opened' || action === 'synchronize')) {
+    if (event === 'pull_request' && (action === 'opened' || action === 'synchronize' || action === 'ready_for_review')) {
       await handlePullRequest(ctx);
     } else if (event === 'issue_comment' && (action === 'created' || action === 'edited')) {
       if (p.issue?.pull_request) {
