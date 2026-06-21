@@ -99,9 +99,10 @@ export async function handleLLMReply(
   if (replyItems.length === 0) return;
 
   const states = parseIssueStates(roundComment.body);
-  const openNumbers = new Set(states.filter(s => s.state === 'open').map(s => s.n));
+  // Allow replies to both open and challenged issues (challenged = skip was rejected, user may retry)
+  const openNumbers = new Set(states.filter(s => s.state === 'open' || s.state === 'challenged').map(s => s.n));
 
-  // Only process items that correspond to open issues
+  // Only process items that correspond to open/challenged issues
   const relevant = replyItems.filter(item => openNumbers.has(item.n));
   if (relevant.length === 0) return;
 
