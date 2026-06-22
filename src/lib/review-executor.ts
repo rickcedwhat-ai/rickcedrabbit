@@ -124,23 +124,26 @@ export async function executeReview(
   };
   const updatedHistory = addReviewRound(history, newRound);
 
-  // 9. Update HQ and labels — fetch fresh HQ and run label/status in parallel
+  // 9. Update HQ and labels — HQ update is critical; label/status are best-effort
   const hasIssues = result.structured.issues.length > 0;
   const label = hasIssues ? 'ai-review: unresolved' : 'ai-review: complete';
   const statusState = hasIssues ? 'failure' : 'success';
   const statusDesc = hasIssues ? `AI review: ${result.structured.issues.length} issue(s)` : 'AI review passed';
 
+  // Fire label + status updates without blocking HQ update
+  setExclusiveAILabel(github, prNumber, label).catch(() => {});
+  github.setCommitStatus(sha, statusState, AI_CONTEXT, statusDesc).catch(() => {});
+
+  // HQ update: fetch spend + HQ comment in parallel, each with its own catch
   const [spendStatus, hqForUpdate] = await Promise.all([
-    spendGuard.getSpendStatus(repo),
-    findHQComment(github, prNumber),
-    setExclusiveAILabel(github, prNumber, label),
-    github.setCommitStatus(sha, statusState, AI_CONTEXT, statusDesc).catch(() => {}),
+    spendGuard.getSpendStatus(repo).catch(() => null),
+    findHQComment(github, prNumber).catch(() => null),
   ]);
 
   if (hqForUpdate) {
     const section = hasIssues
       ? buildAIReviewSectionUnresolved(result.structured.issues.length, spendStatus, updatedHistory)
       : buildAIReviewSectionComplete(spendStatus, updatedHistory);
-    await github.updateComment(hqForUpdate.id, replaceAIReviewSection(hqForUpdate.body, section));
+    await github.updateComment(hqForUpdate.id, replaceAIReviewSection(hqForUpdate.body, section)).catch(() => {});
   }
 }
