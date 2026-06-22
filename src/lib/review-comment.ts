@@ -38,7 +38,22 @@ export function buildRoundComment(round: number, structured: StructuredReview): 
             return `[${i.number}] ${i.title} — ${i.file}${loc}\n${i.body}`;
           })
           .join('\n\n');
-        const inner = '```\nReview findings — reply with [N] fix or [N] skip + reason:\n\n' + lines + '\n```';
+        const preamble = [
+          'You are an AI code reviewer resolving findings from a pull request review.',
+          '',
+          'For each issue below:',
+          '1. Determine whether the finding is valid.',
+          '2. If valid — fix the code, commit your changes to the branch, then record [N] fix.',
+          '3. If not valid (false positive or intentional design) — record [N] skip - <your reason>.',
+          '',
+          'After addressing all issues, post a single comment to this PR with one line per issue:',
+          '  [N] fix',
+          '  [N] skip - reason',
+          '',
+          'Do not reply to the user who shared this prompt — reply directly in the PR.',
+          '---',
+        ].join('\n');
+        const inner = '```\n' + preamble + '\n\n' + lines + '\n```';
         return `<details>\n<summary>📋 ${label} — expand to copy prompt</summary>\n\n${inner}\n\n</details>`;
       })()
     : '';
@@ -97,9 +112,11 @@ export function parseIssueBody(body: string, n: number): string | null {
 
 export function parseLLMReply(body: string): Array<{ n: number; action: 'fix' | 'skip'; reason?: string }> {
   const items: Array<{ n: number; action: 'fix' | 'skip'; reason?: string }> = [];
+  // Strip markdown bold/italic markers so **[1] skip** — reason parses correctly
+  const cleaned = body.replace(/\*+/g, '');
   const re = /\[(\d+)\]\s+(fix|skip)(?:\s*[-–—:]\s*(.+))?/gi;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body)) !== null) {
+  while ((m = re.exec(cleaned)) !== null) {
     items.push({
       n: parseInt(m[1]),
       action: m[2].toLowerCase() as 'fix' | 'skip',
