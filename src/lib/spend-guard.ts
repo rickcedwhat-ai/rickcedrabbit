@@ -43,11 +43,11 @@ export class SpendGuard {
   }
 
   async checkLimits(repo: string): Promise<{ allowed: boolean; reason?: string }> {
-    const [repoDay, globalDay, globalMonth] = await Promise.all([
-      this.redis.get<number>(dailyKey(repo)),
-      this.redis.get<number>(globalDailyKey()),
-      this.redis.get<number>(globalMonthlyKey()),
-    ]);
+    const [repoDay, globalDay, globalMonth] = await this.redis.pipeline()
+      .get<number>(dailyKey(repo))
+      .get<number>(globalDailyKey())
+      .get<number>(globalMonthlyKey())
+      .exec();
 
     const rd = repoDay ?? 0;
     const gd = globalDay ?? 0;
@@ -83,11 +83,11 @@ export class SpendGuard {
   }
 
   async getSpendStatus(repo: string): Promise<SpendStatus> {
-    const [repoDay, globalDay, globalMonth] = await Promise.all([
-      this.redis.get<number>(dailyKey(repo)),
-      this.redis.get<number>(globalDailyKey()),
-      this.redis.get<number>(globalMonthlyKey()),
-    ]);
+    const [repoDay, globalDay, globalMonth] = await this.redis.pipeline()
+      .get<number>(dailyKey(repo))
+      .get<number>(globalDailyKey())
+      .get<number>(globalMonthlyKey())
+      .exec();
 
     return {
       repo_daily: repoDay ?? 0,
