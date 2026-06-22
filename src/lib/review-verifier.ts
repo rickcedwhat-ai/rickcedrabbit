@@ -71,15 +71,16 @@ async function finalizeIfResolved(
   const states = parseIssueStates(roundCommentBody);
   if (!allIssuesResolved(states)) return false;
 
-  await setExclusiveAILabel(ctx.github, prNumber, 'ai-review: complete');
-  await ctx.github.setCommitStatus(headSha, 'success', AI_CONTEXT, 'AI review complete');
+  setExclusiveAILabel(ctx.github, prNumber, 'ai-review: complete').catch(() => {});
+  ctx.github.setCommitStatus(headSha, 'success', AI_CONTEXT, 'AI review complete').catch(() => {});
 
-  const hq = await findHQComment(ctx.github, prNumber);
+  const [hq, spend] = await Promise.all([
+    findHQComment(ctx.github, prNumber).catch(() => null),
+    new SpendGuard(ctx.env).getSpendStatus(ctx.repo).catch(() => null),
+  ]);
   if (hq) {
     const history = parseReviewHistory(hq.body);
-    const spendGuard = new SpendGuard(ctx.env);
-    const spend = await spendGuard.getSpendStatus(ctx.repo);
-    await ctx.github.updateComment(hq.id, replaceAIReviewSection(hq.body, buildAIReviewSectionComplete(spend, history)));
+    await ctx.github.updateComment(hq.id, replaceAIReviewSection(hq.body, buildAIReviewSectionComplete(spend, history))).catch(() => {});
   }
   return true;
 }

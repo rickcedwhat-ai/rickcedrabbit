@@ -61,8 +61,9 @@ export async function setExclusiveAILabel(
   }
 }
 
-function spendLine(spend: SpendStatus, history: ReviewRound[]): string {
+function spendLine(spend: SpendStatus | null, history: ReviewRound[]): string {
   const prTotal = history.reduce((sum, r) => sum + r.cost, 0);
+  if (!spend) return `📊 This PR: $${prTotal.toFixed(4)}`;
   return `📊 This PR: $${prTotal.toFixed(4)} · Repo today: $${spend.repo_daily.toFixed(2)} / $${spend.limits.repo_daily.toFixed(2)} · Month: $${spend.global_monthly.toFixed(2)} / $${spend.limits.global_monthly.toFixed(2)}`;
 }
 
@@ -91,7 +92,7 @@ ${SINGLE_CHECKBOX}
 <!-- ai-review-section-end -->`;
 }
 
-export function buildAIReviewSectionComplete(spend: SpendStatus, history: ReviewRound[]): string {
+export function buildAIReviewSectionComplete(spend: SpendStatus | null, history: ReviewRound[]): string {
   return `<!-- ai-review-section-start -->
 <!-- ai-review-trigger-time: -->
 
@@ -106,7 +107,7 @@ ${serializeReviewHistory(history)}
 <!-- ai-review-section-end -->`;
 }
 
-export function buildAIReviewSectionUnresolved(actionableCount: number, spend: SpendStatus, history: ReviewRound[]): string {
+export function buildAIReviewSectionUnresolved(actionableCount: number, spend: SpendStatus | null, history: ReviewRound[]): string {
   return `<!-- ai-review-section-start -->
 <!-- ai-review-trigger-time: -->
 
