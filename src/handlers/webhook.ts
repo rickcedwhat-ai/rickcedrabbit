@@ -224,8 +224,8 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
   const isDraft: boolean = pr.draft === true;
 
   if (action === 'opened') {
-    if (userLogin === DEPENDABOT_LOGIN) {
-      await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'Dependabot PR — AI review not required');
+    if (userLogin === DEPENDABOT_LOGIN || userLogin === BOT_LOGIN) {
+      await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'Bot PR — AI review not required');
       return;
     }
 
