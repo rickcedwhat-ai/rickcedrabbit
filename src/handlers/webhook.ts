@@ -303,10 +303,13 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
     }
   }
 
-  // LLM [N] fix/skip reply — allowed from any author (including bot acting as LLM)
+  // LLM [N] fix/skip reply — allowed from any author (including bot acting as LLM).
+  // Also accepts 'ai-review: waiting' because the label update in step 9 is fire-and-forget
+  // and can fail silently, leaving the label stuck at 'waiting' after a review completes.
+  // handleLLMReply has its own guard — it returns early if there are no open issues.
   if (action === 'created' && /\[\d+\]\s+(fix|skip)/i.test(commentBody)) {
     const labels = await github.getLabels(prNumber);
-    if (labels.includes('ai-review: unresolved')) {
+    if (labels.includes('ai-review: unresolved') || labels.includes('ai-review: waiting')) {
       const pr = await github.getPR(prNumber);
       const { handleLLMReply } = await import('../lib/review-verifier.js');
       await handleLLMReply(ctx, prNumber, commentBody, pr.head.sha);
