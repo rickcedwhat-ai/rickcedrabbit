@@ -16,7 +16,7 @@ export class GitHubClient {
     };
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async fetch(path: string, options: RequestInit = {}, attempt = 0): Promise<Response> {
     const url = `${BASE_URL}${path}`;
     const res = await fetch(url, {
       ...options,
@@ -25,6 +25,21 @@ export class GitHubClient {
         ...(options.headers as Record<string, string> ?? {}),
       },
     });
+
+    // Retry on 429 (secondary rate limit) — respect Retry-After, cap at 3 attempts
+    if (res.status === 429 && attempt < 3) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5', 10);
+      const delay = Math.min(retryAfter, 30) * 1000;
+      console.warn(`GitHub rate limit on ${path} — retrying in ${delay}ms (attempt ${attempt + 1})`);
+      await new Promise(r => setTimeout(r, delay));
+      return this.fetch(path, options, attempt + 1);
+    }
+
+    return res;
+  }
+
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const res = await this.fetch(path, options);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`GitHub API error ${res.status} for ${path}: ${text}`);
@@ -136,12 +151,8 @@ export class GitHubClient {
   }
 
   async getPRDiff(prNumber: number): Promise<string> {
-    const url = `${BASE_URL}/repos/${this.repo}/pulls/${prNumber}`;
-    const res = await fetch(url, {
-      headers: {
-        ...this.headers,
-        'Accept': 'application/vnd.github.v3.diff',
-      },
+    const res = await this.fetch(`/repos/${this.repo}/pulls/${prNumber}`, {
+      headers: { 'Accept': 'application/vnd.github.v3.diff' },
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -193,9 +204,8 @@ export class GitHubClient {
   }
 
   async getPRDiffSince(baseSha: string, headSha: string): Promise<string> {
-    const url = `${BASE_URL}/repos/${this.repo}/compare/${baseSha}...${headSha}`;
-    const res = await fetch(url, {
-      headers: { ...this.headers, 'Accept': 'application/vnd.github.v3.diff' },
+    const res = await this.fetch(`/repos/${this.repo}/compare/${baseSha}...${headSha}`, {
+      headers: { 'Accept': 'application/vnd.github.v3.diff' },
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
