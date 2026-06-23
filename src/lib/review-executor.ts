@@ -5,7 +5,6 @@ import {
   buildAIReviewSectionComplete,
   buildAIReviewSectionUnresolved,
   buildAIReviewSectionSpendLimited,
-  findHQComment,
   AI_CONTEXT,
 } from '../handlers/webhook.js';
 import { SpendGuard, calculateCost } from './spend-guard.js';
@@ -134,16 +133,14 @@ export async function executeReview(
   setExclusiveAILabel(github, prNumber, label).catch(() => {});
   github.setCommitStatus(sha, statusState, AI_CONTEXT, statusDesc).catch(() => {});
 
-  // HQ update: fetch spend + HQ comment in parallel, each with its own catch
-  const [spendStatus, hqForUpdate] = await Promise.all([
-    spendGuard.getSpendStatus(repo).catch(() => null),
-    findHQComment(github, prNumber).catch(() => null),
-  ]);
+  // HQ update: use hqFresh (already fetched in step 4) — avoids a redundant getIssueComments
+  // call that could race with the concurrent fire-and-forget label/status requests above.
+  const spendStatus = await spendGuard.getSpendStatus(repo).catch(() => null);
 
-  if (hqForUpdate) {
+  if (hqFresh) {
     const section = hasIssues
       ? buildAIReviewSectionUnresolved(result.structured.issues.length, spendStatus, updatedHistory)
       : buildAIReviewSectionComplete(spendStatus, updatedHistory);
-    await github.updateComment(hqForUpdate.id, replaceAIReviewSection(hqForUpdate.body, section)).catch(() => {});
+    await github.updateComment(hqFresh.id, replaceAIReviewSection(hqFresh.body, section)).catch(() => {});
   }
 }
