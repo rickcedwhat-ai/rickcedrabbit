@@ -16,7 +16,7 @@ export class GitHubClient {
     };
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}, attempt = 0): Promise<T> {
     const url = `${BASE_URL}${path}`;
     const res = await fetch(url, {
       ...options,
@@ -25,6 +25,16 @@ export class GitHubClient {
         ...(options.headers as Record<string, string> ?? {}),
       },
     });
+
+    // Retry on 429 (secondary rate limit) — respect Retry-After, cap at 3 attempts
+    if (res.status === 429 && attempt < 3) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5', 10);
+      const delay = Math.min(retryAfter, 30) * 1000;
+      console.warn(`GitHub rate limit on ${path} — retrying in ${delay}ms (attempt ${attempt + 1})`);
+      await new Promise(r => setTimeout(r, delay));
+      return this.request<T>(path, options, attempt + 1);
+    }
+
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`GitHub API error ${res.status} for ${path}: ${text}`);
