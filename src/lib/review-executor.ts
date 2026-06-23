@@ -130,17 +130,24 @@ export async function executeReview(
   const statusDesc = hasIssues ? `AI review: ${result.structured.issues.length} issue(s)` : 'AI review passed';
 
   // Fire label + status updates without blocking HQ update
-  setExclusiveAILabel(github, prNumber, label).catch(() => {});
-  github.setCommitStatus(sha, statusState, AI_CONTEXT, statusDesc).catch(() => {});
+  setExclusiveAILabel(github, prNumber, label).catch(e => console.error(`[PR#${prNumber}] setExclusiveAILabel failed:`, e));
+  github.setCommitStatus(sha, statusState, AI_CONTEXT, statusDesc).catch(e => console.error(`[PR#${prNumber}] setCommitStatus failed:`, e));
 
   // HQ update: use hqFresh (already fetched in step 4) — avoids a redundant getIssueComments
   // call that could race with the concurrent fire-and-forget label/status requests above.
-  const spendStatus = await spendGuard.getSpendStatus(repo).catch(() => null);
+  const spendStatus = await spendGuard.getSpendStatus(repo).catch(e => {
+    console.error(`[PR#${prNumber}] getSpendStatus failed:`, e);
+    return null;
+  });
 
   if (hqFresh) {
     const section = hasIssues
       ? buildAIReviewSectionUnresolved(result.structured.issues.length, spendStatus, updatedHistory)
       : buildAIReviewSectionComplete(spendStatus, updatedHistory);
-    await github.updateComment(hqFresh.id, replaceAIReviewSection(hqFresh.body, section)).catch(() => {});
+    await github.updateComment(hqFresh.id, replaceAIReviewSection(hqFresh.body, section)).catch(e => {
+      console.error(`[PR#${prNumber}] updateComment (HQ) failed:`, e);
+    });
+  } else {
+    console.error(`[PR#${prNumber}] HQ comment not found — skipping HQ update`);
   }
 }

@@ -71,16 +71,20 @@ async function finalizeIfResolved(
   const states = parseIssueStates(roundCommentBody);
   if (!allIssuesResolved(states)) return false;
 
-  setExclusiveAILabel(ctx.github, prNumber, 'ai-review: complete').catch(() => {});
-  ctx.github.setCommitStatus(headSha, 'success', AI_CONTEXT, 'AI review complete').catch(() => {});
+  setExclusiveAILabel(ctx.github, prNumber, 'ai-review: complete').catch(e => console.error(`[PR#${prNumber}] setExclusiveAILabel failed:`, e));
+  ctx.github.setCommitStatus(headSha, 'success', AI_CONTEXT, 'AI review complete').catch(e => console.error(`[PR#${prNumber}] setCommitStatus failed:`, e));
 
   const [hq, spend] = await Promise.all([
-    findHQComment(ctx.github, prNumber).catch(() => null),
-    new SpendGuard(ctx.env).getSpendStatus(ctx.repo).catch(() => null),
+    findHQComment(ctx.github, prNumber).catch(e => { console.error(`[PR#${prNumber}] findHQComment failed:`, e); return null; }),
+    new SpendGuard(ctx.env).getSpendStatus(ctx.repo).catch(e => { console.error(`[PR#${prNumber}] getSpendStatus failed:`, e); return null; }),
   ]);
   if (hq) {
     const history = parseReviewHistory(hq.body);
-    await ctx.github.updateComment(hq.id, replaceAIReviewSection(hq.body, buildAIReviewSectionComplete(spend, history))).catch(() => {});
+    await ctx.github.updateComment(hq.id, replaceAIReviewSection(hq.body, buildAIReviewSectionComplete(spend, history))).catch(e => {
+      console.error(`[PR#${prNumber}] updateComment (HQ finalize) failed:`, e);
+    });
+  } else {
+    console.error(`[PR#${prNumber}] HQ comment not found in finalizeIfResolved — skipping HQ update`);
   }
   return true;
 }
