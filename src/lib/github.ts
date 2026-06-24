@@ -26,10 +26,12 @@ export class GitHubClient {
       },
     });
 
-    // Retry on 429 (secondary rate limit) — respect Retry-After, cap at 3 attempts
+    // Retry on 429 (secondary rate limit) — respect Retry-After, cap at 5s.
+    // Cloudflare Workers have a 30s wall-clock limit; a longer delay risks killing
+    // the invocation before the retry completes.
     if (res.status === 429 && attempt < 3) {
-      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5', 10);
-      const delay = Math.min(retryAfter, 30) * 1000;
+      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '2', 10);
+      const delay = Math.min(retryAfter, 5) * 1000;
       console.warn(`GitHub rate limit on ${path} — retrying in ${delay}ms (attempt ${attempt + 1})`);
       await new Promise(r => setTimeout(r, delay));
       return this.fetch(path, options, attempt + 1);
