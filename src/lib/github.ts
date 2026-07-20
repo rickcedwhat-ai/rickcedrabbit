@@ -18,21 +18,34 @@ export class GitHubClient {
 
   private async fetch(path: string, options: RequestInit = {}, attempt = 0): Promise<Response> {
     const url = `${BASE_URL}${path}`;
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        ...this.headers,
-        ...(options.headers as Record<string, string> ?? {}),
-      },
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        ...options,
+        headers: {
+          ...this.headers,
+          ...(options.headers as Record<string, string> ?? {}),
+        },
+      });
+    } catch (err) {
+      // Transient network failures (DNS blip, connection reset, etc.)
+      if (attempt < 3) {
+        const delay = Math.min(1 + attempt, 5) * 1000;
+        console.warn(`GitHub network error on ${path} — retrying in ${delay}ms (attempt ${attempt + 1}):`, err);
+        await new Promise(r => setTimeout(r, delay));
+        return this.fetch(path, options, attempt + 1);
+      }
+      throw err;
+    }
 
-    // Retry on 429 (secondary rate limit) — respect Retry-After, cap at 5s.
-    // Cloudflare Workers have a 30s wall-clock limit; a longer delay risks killing
-    // the invocation before the retry completes.
-    if (res.status === 429 && attempt < 3) {
-      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '2', 10);
-      const delay = Math.min(retryAfter, 5) * 1000;
-      console.warn(`GitHub rate limit on ${path} — retrying in ${delay}ms (attempt ${attempt + 1})`);
+    // Retry on 429 (rate limit) and 502/503/504 (GitHub flake).
+    // Cap delay at 5s — Workers have a ~30s wall-clock limit.
+    const retryable = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+    if (retryable && attempt < 3) {
+      const fallback = res.status === 429 ? 2 : 1;
+      const retryAfter = parseInt(res.headers.get('Retry-After') ?? String(fallback), 10);
+      const delay = Math.min(Number.isFinite(retryAfter) ? retryAfter : fallback, 5) * 1000;
+      console.warn(`GitHub ${res.status} on ${path} — retrying in ${delay}ms (attempt ${attempt + 1})`);
       await new Promise(r => setTimeout(r, delay));
       return this.fetch(path, options, attempt + 1);
     }

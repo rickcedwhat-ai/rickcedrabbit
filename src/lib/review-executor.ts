@@ -5,6 +5,8 @@ import {
   buildAIReviewSectionComplete,
   buildAIReviewSectionUnresolved,
   buildAIReviewSectionSpendLimited,
+  buildAIReviewSectionFailed,
+  findHQComment,
   AI_CONTEXT,
 } from '../handlers/webhook.js';
 import { SpendGuard, calculateCost } from './spend-guard.js';
@@ -13,6 +15,7 @@ import { fetchReviewConfig, getContextFiles } from './review-config.js';
 import { parseReviewHistory, addReviewRound } from './review-history.js';
 import { gatherContextualFiles } from './context-gatherer.js';
 import { buildRoundComment } from './review-comment.js';
+import { classifyReviewError } from './review-errors.js';
 import type { ReviewRound } from './types.js';
 
 const MAX_DIFF_LINES = 600;
@@ -23,7 +26,56 @@ function truncateDiff(diff: string): string {
   return lines.slice(0, MAX_DIFF_LINES).join('\n') + `\n\n… diff truncated at ${MAX_DIFF_LINES} lines (${lines.length - MAX_DIFF_LINES} lines omitted)`;
 }
 
-export async function executeReview(
+/** Best-effort: flip status/label/HQ so the PR isn't stuck at "in progress". */
+async function reportReviewFailure(
+  ctx: HandlerContext,
+  prNumber: number,
+  sha: string,
+  hq: { id: number; body: string } | null,
+  err: unknown,
+): Promise<void> {
+  const { github } = ctx;
+  const classified = classifyReviewError(err);
+  console.error(`[PR#${prNumber}] review failed (${classified.kind}):`, err);
+
+  const statusDesc = `AI review failed — ${classified.summary}`.slice(0, 140);
+
+  await Promise.all([
+    setExclusiveAILabel(github, prNumber, 'ai-review: not started').catch(e =>
+      console.error(`[PR#${prNumber}] setExclusiveAILabel (failure) failed:`, e),
+    ),
+    github.setCommitStatus(sha, 'error', AI_CONTEXT, statusDesc).catch(e =>
+      console.error(`[PR#${prNumber}] setCommitStatus (failure) failed:`, e),
+    ),
+  ]);
+
+  const hqComment = hq ?? await findHQComment(github, prNumber).catch(e => {
+    console.error(`[PR#${prNumber}] findHQComment (failure) failed:`, e);
+    return null;
+  });
+  if (hqComment) {
+    const history = parseReviewHistory(hqComment.body);
+    const section = buildAIReviewSectionFailed(classified.summary, history);
+    await github.updateComment(hqComment.id, replaceAIReviewSection(hqComment.body, section)).catch(e =>
+      console.error(`[PR#${prNumber}] updateComment HQ (failure) failed:`, e),
+    );
+  }
+
+  await github.createComment(
+    prNumber,
+    [
+      `⚠️ AI review failed — **${classified.summary}**.`,
+      '',
+      '```',
+      classified.detail,
+      '```',
+      '',
+      'Retry with `@rickcedwhat-ai review` or the HQ checkbox.',
+    ].join('\n'),
+  ).catch(e => console.error(`[PR#${prNumber}] createComment (failure) failed:`, e));
+}
+
+async function executeReviewInner(
   ctx: HandlerContext,
   prNumber: number,
   sha: string,
@@ -149,5 +201,24 @@ export async function executeReview(
     });
   } else {
     console.error(`[PR#${prNumber}] HQ comment not found — skipping HQ update`);
+  }
+}
+
+/**
+ * Run a review. Errors are caught and surfaced on the PR (status/HQ/comment)
+ * so the check doesn't stay stuck at "in progress". Does not rethrow — callers
+ * should return HTTP 200 so GitHub doesn't storm-retry the webhook.
+ */
+export async function executeReview(
+  ctx: HandlerContext,
+  prNumber: number,
+  sha: string,
+  hq: { id: number; body: string } | null,
+  baseSha?: string,
+): Promise<void> {
+  try {
+    await executeReviewInner(ctx, prNumber, sha, hq, baseSha);
+  } catch (err) {
+    await reportReviewFailure(ctx, prNumber, sha, hq, err);
   }
 }

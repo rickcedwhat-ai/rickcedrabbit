@@ -133,6 +133,20 @@ ${SINGLE_CHECKBOX}
 <!-- ai-review-section-end -->`;
 }
 
+export function buildAIReviewSectionFailed(reason: string, history: ReviewRound[] = []): string {
+  const historyBlock = history.length > 0 ? `\n${serializeReviewHistory(history)}\n` : '';
+  return `<!-- ai-review-section-start -->
+<!-- ai-review-trigger-time: -->
+
+### 🔍 AI Review
+${SINGLE_CHECKBOX}
+
+> ⚠️ AI review failed — ${reason}
+>
+> Retry via checkbox or \`@rickcedwhat-ai review\`.
+${historyBlock}<!-- ai-review-section-end -->`;
+}
+
 // Adds or replaces the partial trigger checkbox in the HQ body without
 // rebuilding the whole section (preserves spend/history lines).
 function addPartialTriggerToHQ(body: string, commitCount: number, baseSha: string): string {
