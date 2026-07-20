@@ -19,6 +19,8 @@ import { classifyReviewError } from './review-errors.js';
 import type { ReviewRound } from './types.js';
 
 const MAX_DIFF_LINES = 600;
+/** Cap recovery so a hung GitHub call can't burn the whole Worker wall-clock budget. */
+const FAILURE_REPORT_TIMEOUT_MS = 10_000;
 
 function truncateDiff(diff: string): string {
   const lines = diff.split('\n');
@@ -26,8 +28,36 @@ function truncateDiff(diff: string): string {
   return lines.slice(0, MAX_DIFF_LINES).join('\n') + `\n\n… diff truncated at ${MAX_DIFF_LINES} lines (${lines.length - MAX_DIFF_LINES} lines omitted)`;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise.finally(() => { if (timer !== undefined) clearTimeout(timer); }),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 /** Best-effort: flip status/label/HQ so the PR isn't stuck at "in progress". */
 async function reportReviewFailure(
+  ctx: HandlerContext,
+  prNumber: number,
+  sha: string,
+  hq: { id: number; body: string } | null,
+  err: unknown,
+): Promise<void> {
+  try {
+    await withTimeout(
+      reportReviewFailureInner(ctx, prNumber, sha, hq, err),
+      FAILURE_REPORT_TIMEOUT_MS,
+      `reportReviewFailure for PR#${prNumber}`,
+    );
+  } catch (reportErr) {
+    console.error(`[PR#${prNumber}] reportReviewFailure aborted:`, reportErr);
+  }
+}
+
+async function reportReviewFailureInner(
   ctx: HandlerContext,
   prNumber: number,
   sha: string,
@@ -59,6 +89,8 @@ async function reportReviewFailure(
     await github.updateComment(hqComment.id, replaceAIReviewSection(hqComment.body, section)).catch(e =>
       console.error(`[PR#${prNumber}] updateComment HQ (failure) failed:`, e),
     );
+  } else {
+    console.warn(`[PR#${prNumber}] HQ comment not found during failure report — status/label updated, HQ left unchanged`);
   }
 
   await github.createComment(
