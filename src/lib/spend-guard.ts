@@ -49,9 +49,9 @@ export class SpendGuard {
       .get<number>(globalMonthlyKey())
       .exec();
 
-    const rd = repoDay ?? 0;
-    const gd = globalDay ?? 0;
-    const gm = globalMonth ?? 0;
+    const rd = parseFloat(String(repoDay ?? 0));
+    const gd = parseFloat(String(globalDay ?? 0));
+    const gm = parseFloat(String(globalMonth ?? 0));
 
     if (rd >= this.limits.repo_daily) {
       return { allowed: false, reason: `repo daily limit ($${this.limits.repo_daily.toFixed(2)}) reached — current: $${rd.toFixed(2)}` };
@@ -90,9 +90,9 @@ export class SpendGuard {
       .exec();
 
     return {
-      repo_daily: repoDay ?? 0,
-      global_daily: globalDay ?? 0,
-      global_monthly: globalMonth ?? 0,
+      repo_daily: parseFloat(String(repoDay ?? 0)),
+      global_daily: parseFloat(String(globalDay ?? 0)),
+      global_monthly: parseFloat(String(globalMonth ?? 0)),
       limits: { ...this.limits },
     };
   }
