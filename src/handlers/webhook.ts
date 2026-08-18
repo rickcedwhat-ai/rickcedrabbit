@@ -40,6 +40,7 @@ export const HQ_COMMENT_TEMPLATE = `<!-- bot-hq -->
 
 ### 🔍 AI Review
 - [ ] 🔍 Request AI review
+- [ ] ⏭️ Skip AI review
 
 > _Not yet requested_
 <!-- ai-review-section-end -->
@@ -67,14 +68,16 @@ function spendLine(spend: SpendStatus | null, history: ReviewRound[]): string {
   return `📊 This PR: $${prTotal.toFixed(4)} · Repo today: $${spend.repo_daily.toFixed(2)} / $${spend.limits.repo_daily.toFixed(2)} · Month: $${spend.global_monthly.toFixed(2)} / $${spend.limits.global_monthly.toFixed(2)}`;
 }
 
-const SINGLE_CHECKBOX = '- [ ] 🔍 Request AI review';
+const REVIEW_CHECKBOX = '- [ ] 🔍 Request AI review';
+const SKIP_CHECKBOX = '- [ ] ⏭️ Skip AI review';
+const CHECKBOXES = `${REVIEW_CHECKBOX}\n${SKIP_CHECKBOX}`;
 
 function buildAIReviewSectionNotStarted(): string {
   return `<!-- ai-review-section-start -->
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-${SINGLE_CHECKBOX}
+${CHECKBOXES}
 
 > _Not yet requested_
 <!-- ai-review-section-end -->`;
@@ -86,7 +89,7 @@ function buildAIReviewSectionWaiting(prNumber: number): string {
 <!-- ai-review-trigger-time: ${now} -->
 
 ### 🔍 AI Review
-${SINGLE_CHECKBOX}
+${CHECKBOXES}
 
 > ⏳ Review requested for #${prNumber} — AI review in progress…
 <!-- ai-review-section-end -->`;
@@ -97,7 +100,7 @@ export function buildAIReviewSectionComplete(spend: SpendStatus | null, history:
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-${SINGLE_CHECKBOX}
+${CHECKBOXES}
 
 > ✅ Review complete — no blocking issues.
 
@@ -112,7 +115,7 @@ export function buildAIReviewSectionUnresolved(actionableCount: number, spend: S
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-${SINGLE_CHECKBOX}
+${CHECKBOXES}
 
 > ❌ Review complete — **${actionableCount} issue(s)** require attention.
 
@@ -127,7 +130,7 @@ export function buildAIReviewSectionSpendLimited(reason: string): string {
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-${SINGLE_CHECKBOX}
+${CHECKBOXES}
 
 > ⛔ Spend limit reached — ${reason}
 <!-- ai-review-section-end -->`;
@@ -139,11 +142,24 @@ export function buildAIReviewSectionFailed(reason: string, history: ReviewRound[
 <!-- ai-review-trigger-time: -->
 
 ### 🔍 AI Review
-${SINGLE_CHECKBOX}
+${CHECKBOXES}
 
 > ⚠️ AI review failed — ${reason}
 >
 > Retry via checkbox or \`@rickcedwhat-ai review\`.
+${historyBlock}<!-- ai-review-section-end -->`;
+}
+
+export function buildAIReviewSectionSkipped(history: ReviewRound[] = []): string {
+  const historyBlock = history.length > 0 ? `\n${serializeReviewHistory(history)}\n` : '';
+  return `<!-- ai-review-section-start -->
+<!-- ai-review-trigger-time: -->
+<!-- ai-review-skipped -->
+
+### 🔍 AI Review
+${CHECKBOXES}
+
+> ⏭️ AI review skipped — merge is unblocked.
 ${historyBlock}<!-- ai-review-section-end -->`;
 }
 
@@ -155,6 +171,15 @@ function addPartialTriggerToHQ(body: string, commitCount: number, baseSha: strin
   return body.replace(
     /(- \[ \] 🔍 Request AI review\n)(?:- \[ \] 🔄[^\n]*\n)?(?:<!-- partial-base-sha: [a-f0-9]+ -->\n)?/,
     `$1${line}\n${marker}\n`,
+  );
+}
+
+/** Backfill the skip checkbox on HQ comments posted before this existed. */
+export function ensureSkipCheckbox(body: string): string {
+  if (/Skip AI review/i.test(body)) return body;
+  return body.replace(
+    /(- \[[ xX]\] 🔍 Request AI review\n)/,
+    `$1${SKIP_CHECKBOX}\n`,
   );
 }
 
@@ -187,9 +212,15 @@ function replaceIssueLinkSection(hqBody: string, newSection: string): string {
   );
 }
 
-type ReviewTrigger = { type: 'full' } | { type: 'partial'; baseSha: string } | null;
+export type HQAction =
+  | { type: 'full' }
+  | { type: 'partial'; baseSha: string }
+  | { type: 'skip' }
+  | null;
 
-function getReviewTrigger(body: string): ReviewTrigger {
+/** Skip takes precedence if both skip and review are checked. */
+export function getHQAction(body: string): HQAction {
+  if (/- \[x\] ⏭️/i.test(body) || /- \[x\] Skip AI review/i.test(body)) return { type: 'skip' };
   if (/- \[x\] 🔍/i.test(body)) return { type: 'full' };
   if (/- \[x\] 🔄/i.test(body)) {
     const m = body.match(/<!-- partial-base-sha: ([a-f0-9]+) -->/);
@@ -226,6 +257,23 @@ async function triggerReview(
 
   const { executeReview } = await import('../lib/review-executor.js');
   await executeReview(ctx, prNumber, sha, hq, baseSha);
+}
+
+async function skipReview(
+  ctx: HandlerContext,
+  prNumber: number,
+  sha: string,
+): Promise<void> {
+  const { github } = ctx;
+
+  await setExclusiveAILabel(github, prNumber, 'ai-review: complete');
+  await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'AI review skipped');
+
+  const hq = await findHQComment(github, prNumber);
+  if (hq) {
+    const history = parseReviewHistory(hq.body);
+    await github.updateComment(hq.id, replaceAIReviewSection(hq.body, buildAIReviewSectionSkipped(history)));
+  }
 }
 
 export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
@@ -267,17 +315,25 @@ export async function handlePullRequest(ctx: HandlerContext): Promise<void> {
     if (isDraft) return;
 
     const labels = await github.getLabels(prNumber);
+    const hq = await findHQComment(github, prNumber);
+    if (hq) {
+      const withSkip = ensureSkipCheckbox(hq.body);
+      if (withSkip !== hq.body) {
+        await github.updateComment(hq.id, withSkip);
+        hq.body = withSkip;
+      }
+    }
 
-    if (labels.includes('ai-review: complete')) {
-      const hq = await findHQComment(github, prNumber);
-      if (hq) {
-        const history = parseReviewHistory(hq.body);
-        const lastRound = history[history.length - 1];
-        if (lastRound) {
-          const commitCount = await github.countCommitsSince(lastRound.commit_sha, sha);
-          if (commitCount > 0) {
-            await github.updateComment(hq.id, addPartialTriggerToHQ(hq.body, commitCount, lastRound.commit_sha));
-          }
+    if (labels.includes('ai-review: complete') && hq) {
+      if (hq.body.includes('<!-- ai-review-skipped -->')) {
+        await github.setCommitStatus(sha, 'success', AI_CONTEXT, 'AI review skipped');
+      }
+      const history = parseReviewHistory(hq.body);
+      const lastRound = history[history.length - 1];
+      if (lastRound) {
+        const commitCount = await github.countCommitsSince(lastRound.commit_sha, sha);
+        if (commitCount > 0) {
+          await github.updateComment(hq.id, addPartialTriggerToHQ(hq.body, commitCount, lastRound.commit_sha));
         }
       }
     }
@@ -361,16 +417,19 @@ export async function handleIssueComment(ctx: HandlerContext): Promise<void> {
 
   // HQ comment checkbox edit detection (bot's comment, non-bot sender)
   if (action === 'edited' && commentAuthor === BOT_LOGIN && senderLogin !== BOT_LOGIN && commentBody.includes('<!-- bot-hq -->')) {
-    const trigger = getReviewTrigger(commentBody);
-    if (trigger) {
-      const pr = await github.getPR(prNumber);
-      await triggerReview(
-        ctx,
-        prNumber,
-        pr.head.sha,
-        trigger.type === 'partial' ? trigger.baseSha : undefined,
-      );
+    const hqAction = getHQAction(commentBody);
+    if (!hqAction) return;
+    const pr = await github.getPR(prNumber);
+    if (hqAction.type === 'skip') {
+      await skipReview(ctx, prNumber, pr.head.sha);
+      return;
     }
+    await triggerReview(
+      ctx,
+      prNumber,
+      pr.head.sha,
+      hqAction.type === 'partial' ? hqAction.baseSha : undefined,
+    );
   }
 }
 

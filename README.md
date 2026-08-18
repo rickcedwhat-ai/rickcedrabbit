@@ -5,6 +5,7 @@ A self-hosted AI code reviewer powered by Claude. Reviews PRs, plans issues, tra
 ## What it does
 
 - Posts AI reviews on pull requests when triggered via checkbox or `@rickcedwhat-ai review`
+- Lets you skip review from HQ (sets `ai-review: complete` + a passing `ai-review` status so the PR can merge)
 - Sets a `ai-review` commit status (pass/fail) based on whether the review found blocking issues
 - Tracks spend per-repo and globally with configurable limits
 - Generates implementation plans on issues via `@rickcedwhat-ai plan`
@@ -71,8 +72,9 @@ Copy `.bot-review.yaml.example` to `.bot-review.yaml` in any repo's root and cus
 ## Triggering a review
 
 In any PR:
-- Edit the Bot HQ comment and check one of the three checkboxes
+- Edit the Bot HQ comment and check **Request AI review** (or the partial-review checkbox after new commits)
 - Or comment `@rickcedwhat-ai review`
+- To merge without a review, check **Skip AI review** — the bot sets label `ai-review: complete` and commit status `ai-review` to success
 
 For issue planning:
 - Comment `@rickcedwhat-ai plan`
